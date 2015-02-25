@@ -11,15 +11,20 @@
 #include <sys/kernel.h> /* types used in module initialization */
 #include <sys/vmmeter.h>
 #include <sys/sysctl.h>
+#include <sys/proc.h>
 
 /* debug */
 #define DEBUG 1
 #define DEBUG_TASK (1 << 1)
 #define DEBUG_VMFP (1 << 2)
-static unsigned int debug_level = 1;
+#define DEBUG_PROC (1 << 3)
+static unsigned int debug_level = 8;
 
 /* vm */
 extern struct vmmeter cnt;
+
+/* proc */
+extern int nprocs, maxproc;
 
 /* sysctl */
 static struct sysctl_ctx_list clist;
@@ -37,32 +42,48 @@ static char vmfp_str[5] = "0%";
 /* number of process */
 static unsigned int proc_enable = 1;
 static int proc = 0;
-static int proc_high = 10;
+static int proc_low = 10;
 static int proc_gap = 10;
+static char proc_str[5] = "0%";
 
 /* callout */
 static struct callout rmon_callout;
 
 static void
 rmonitor_task_detect(void *arg) {
-    int pre_vmfp, gap;
+    int pre, gap;
 
     if (debug_level &  DEBUG_TASK)
         printf("Rmonitor execute, period: %d secs\n", period);
 
     if (vmfp_enable && cnt.v_page_count) {
-        pre_vmfp = vmfp;
-        vmfp = (cnt.v_free_count*100) / cnt.v_page_count;
-        gap = pre_vmfp - vmfp;
+        pre = vmfp;
+        vmfp = (cnt.v_free_count * 100) / cnt.v_page_count;
+        gap = pre - vmfp;
         snprintf(vmfp_str, sizeof(vmfp_str), "%d%%", vmfp);
         if (vmfp < vmfp_low)
             printf("Rmonitor: free memory %d%% is lower than threshold %d%%\n", vmfp, vmfp_low);
         if (gap > vmfp_gap)
             printf("Rmonitor: free memory decrease %d%%(%d%%->%d%%) is greater than threshold %d%%\n", 
-                    gap, pre_vmfp, vmfp, vmfp_gap);
+                    gap, pre, vmfp, vmfp_gap);
             
         if (debug_level & DEBUG_VMFP)
             printf("free %d total %d percent %d%%\n", cnt.v_free_count, cnt.v_page_count, vmfp);
+    }
+
+    if (proc_enable && maxproc) {
+        pre = proc;
+        proc = 100 - (nprocs * 100) / maxproc;
+        gap = pre - proc;
+        snprintf(proc_str, sizeof(proc_str), "%d%%", proc);
+        if (proc < proc_low)
+            printf("Rmonitor: free process %d%% is lower than threshold %d%%\n", proc, proc_low);
+        if (gap > proc_gap)
+            printf("Rmonitor: free process decrease %d%%(%d%%->%d%%) is greater than threshold %d%%\n",
+                    gap, pre, proc, proc_gap);
+
+        if (debug_level & DEBUG_PROC)
+            printf("free %d total %d percent %d%%\n", (maxproc - nprocs), maxproc, proc);
     }
 
     if (period)
@@ -116,6 +137,8 @@ rmonitor_modevent(module_t mod __unused, int event, void *arg __unused)
         SYSCTL_ADD_UINT(&clist, SYSCTL_CHILDREN(poid), OID_AUTO,
             "debug_level", CTLFLAG_RW, &debug_level, 0,  "rmonitor debug level");
             
+        /* vmfp */
+
         SYSCTL_ADD_UINT(&clist, SYSCTL_CHILDREN(poid), OID_AUTO,
             "vmfp_enable", CTLFLAG_RW, &vmfp_enable, 0,  "enable vm free detection");
 
@@ -128,6 +151,23 @@ rmonitor_modevent(module_t mod __unused, int event, void *arg __unused)
         SYSCTL_ADD_STRING(&clist, SYSCTL_CHILDREN(poid), OID_AUTO, 
                 "vmfp", CTLFLAG_RD, 
                 vmfp_str, sizeof(vmfp_str), "vm free percentage");
+
+        /* proc */
+
+        SYSCTL_ADD_UINT(&clist, SYSCTL_CHILDREN(poid), OID_AUTO,
+            "proc_enable", CTLFLAG_RW, &proc_enable, 0,  "enable proc free detection");
+
+        SYSCTL_ADD_INT(&clist, SYSCTL_CHILDREN(poid), OID_AUTO,
+            "proc_low", CTLFLAG_RW, &proc_low, 0, "proc free percentage low threshold");
+            
+        SYSCTL_ADD_INT(&clist, SYSCTL_CHILDREN(poid), OID_AUTO,
+            "proc_gap", CTLFLAG_RW, &proc_gap, 0, "proc free percentage decrease threshold");
+            
+        SYSCTL_ADD_STRING(&clist, SYSCTL_CHILDREN(poid), OID_AUTO, 
+                "proc", CTLFLAG_RD, 
+                proc_str, sizeof(proc_str), "proc free percentage");
+
+        /* callout */
 
         callout_init(&rmon_callout, CALLOUT_MPSAFE);
         callout_reset(&rmon_callout, 0, rmonitor_task_detect, NULL);

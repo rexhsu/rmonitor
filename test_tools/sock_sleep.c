@@ -1,17 +1,17 @@
 #include <stdio.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <sys/socket.h>
 
 extern char *optarg;
 
 void usage(void) {
-    printf("fork_sleep [-n process count] [-s sleep time]\n\
+    printf("sock_sleep [-n socket count] [-s sleep time]\n\
 default:1024 process sleep 60 seconds");
 }
 
 int main(int argc, char *argv[]) {
-    pid_t pid;
-    int c, i, p = 1024, s = 60, w;
+    int c, i, p = 10, s = 2, w, sck;
 
     while((c = getopt(argc, argv, "n:s:")) != -1) {
         //printf("%s getopt %c optarg %s\n", __func__, c, optarg);
@@ -29,23 +29,18 @@ int main(int argc, char *argv[]) {
     }
 
     for (i = 0; i < p; i++) {
-        pid = fork();
-        if (pid > 0) {
-            printf("%d: fork pid %d\n", i, pid);
-            continue;
-        } else if (pid < 0) {
-            printf("%d: fork pid failed\n", i);
-            pid = waitpid(-1, &w, 0);
-            printf("%d: waitpid return %d\n", i, pid);
-            i--;
-            continue;
-        } else {
-            sleep(s);
-            //printf("%d: process _exit(0)\n", i); 
-            _exit(0);
-        }
+        sck = socket(PF_LOCAL, SOCK_STREAM, 0); 
+          if (sck >= 0) {
+               printf("%d: socket %d\n", i, sck);
+               continue;
+           } else {
+               printf("%d: socket failed\n", i);
+               continue;
+           }
+
     }
-    waitpid(0, &w, 0);
+
+    sleep(s);
 exit:
     return 0;
 }

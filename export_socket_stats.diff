@@ -1,0 +1,33 @@
+diff -r b5b2f36fbade sys/kern/uipc_socket.c
+--- a/sys/kern/uipc_socket.c	Thu Feb 26 09:29:46 2015 +0000
++++ b/sys/kern/uipc_socket.c	Thu Feb 26 09:43:23 2015 +0000
+@@ -185,13 +185,13 @@
+ 	VNET_ASSERT(curvnet != NULL,					\
+ 	    ("%s:%d curvnet is NULL, so=%p", __func__, __LINE__, (so)));
+ 
+-static int somaxconn = SOMAXCONN;
++int somaxconn = SOMAXCONN;
+ static int sysctl_somaxconn(SYSCTL_HANDLER_ARGS);
+ /* XXX: we dont have SYSCTL_USHORT */
+ SYSCTL_PROC(_kern_ipc, KIPC_SOMAXCONN, somaxconn, CTLTYPE_UINT | CTLFLAG_RW,
+     0, sizeof(int), sysctl_somaxconn, "I", "Maximum pending socket connection "
+     "queue size");
+-static int numopensockets;
++int numopensockets;
+ SYSCTL_INT(_kern_ipc, OID_AUTO, numopensockets, CTLFLAG_RD,
+     &numopensockets, 0, "Number of open sockets");
+ #ifdef ZERO_COPY_SOCKETS
+diff -r b5b2f36fbade sys/sys/socket.h
+--- a/sys/sys/socket.h	Thu Feb 26 09:29:46 2015 +0000
++++ b/sys/sys/socket.h	Thu Feb 26 09:43:23 2015 +0000
+@@ -670,6 +670,10 @@
+ 
+ void so_listeners_apply_all(struct socket *so, void (*func)(struct socket *, void *), void *arg);
+ 
++extern int maxsockets;
++extern int numopensockets;
++extern int somaxconn;
++
+ #endif
+ 
+ 

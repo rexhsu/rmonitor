@@ -12,19 +12,15 @@
 #include <sys/vmmeter.h>
 #include <sys/sysctl.h>
 #include <sys/proc.h>
+#include <sys/socket.h>
 
 /* debug */
 #define DEBUG 1
 #define DEBUG_TASK (1 << 1)
 #define DEBUG_VMFP (1 << 2)
 #define DEBUG_PROC (1 << 3)
-static unsigned int debug_level = 8;
-
-/* vm */
-extern struct vmmeter cnt;
-
-/* proc */
-extern int nprocs, maxproc;
+#define DEBUG_SOCK (1 << 4)
+static unsigned int debug_level = DEBUG_SOCK;
 
 /* sysctl */
 static struct sysctl_ctx_list clist;
@@ -45,6 +41,13 @@ static int proc = 0;
 static int proc_low = 10;
 static int proc_gap = 10;
 static char proc_str[5] = "0%";
+
+/* number of socket */
+static unsigned int sock_enable = 1;
+static int sock = 0;
+static int sock_low = 10;
+static int sock_gap = 10;
+static char sock_str[5] = "0%";
 
 /* callout */
 static struct callout rmon_callout;
@@ -68,7 +71,7 @@ rmonitor_task_detect(void *arg) {
                     gap, pre, vmfp, vmfp_gap);
             
         if (debug_level & DEBUG_VMFP)
-            printf("free %d total %d percent %d%%\n", cnt.v_free_count, cnt.v_page_count, vmfp);
+            printf("free vm %d total %d percent %d%%\n", cnt.v_free_count, cnt.v_page_count, vmfp);
     }
 
     if (proc_enable && maxproc) {
@@ -83,7 +86,22 @@ rmonitor_task_detect(void *arg) {
                     gap, pre, proc, proc_gap);
 
         if (debug_level & DEBUG_PROC)
-            printf("free %d total %d percent %d%%\n", (maxproc - nprocs), maxproc, proc);
+            printf("free proc %d total %d percent %d%%\n", (maxproc - nprocs), maxproc, proc);
+    }
+
+    if (sock_enable && maxsockets) {
+        pre = sock;
+        sock = 100 - (numopensockets * 100) / maxsockets;
+        gap = pre - sock;
+        snprintf(sock_str, sizeof(sock_str), "%d%%", sock);
+        if (sock < sock_low)
+            printf("Rmonitor: free socket %d%% is lower than threshold %d%%\n", sock, sock_low);
+        if (gap > sock_gap)
+            printf("Rmonitor: free socket decrease %d%%(%d%%->%d%%) is greater than threshold %d%%\n",
+                    gap, pre, sock, sock_gap);
+
+        if (debug_level & DEBUG_SOCK)
+            printf("free sock %d total %d percent %d%%\n", (maxsockets - numopensockets), maxsockets, sock);
     }
 
     if (period)
@@ -166,6 +184,21 @@ rmonitor_modevent(module_t mod __unused, int event, void *arg __unused)
         SYSCTL_ADD_STRING(&clist, SYSCTL_CHILDREN(poid), OID_AUTO, 
                 "proc", CTLFLAG_RD, 
                 proc_str, sizeof(proc_str), "proc free percentage");
+
+        /* sock */
+
+        SYSCTL_ADD_UINT(&clist, SYSCTL_CHILDREN(poid), OID_AUTO,
+            "sock_enable", CTLFLAG_RW, &sock_enable, 0,  "enable sock free detection");
+
+        SYSCTL_ADD_INT(&clist, SYSCTL_CHILDREN(poid), OID_AUTO,
+            "sock_low", CTLFLAG_RW, &sock_low, 0, "sock free percentage low threshold");
+            
+        SYSCTL_ADD_INT(&clist, SYSCTL_CHILDREN(poid), OID_AUTO,
+            "sock_gap", CTLFLAG_RW, &sock_gap, 0, "sock free percentage decrease threshold");
+            
+        SYSCTL_ADD_STRING(&clist, SYSCTL_CHILDREN(poid), OID_AUTO, 
+                "sock", CTLFLAG_RD, 
+                sock_str, sizeof(sock_str), "sock free percentage");
 
         /* callout */
 

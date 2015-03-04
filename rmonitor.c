@@ -14,19 +14,23 @@
 #include <sys/proc.h>
 #include <sys/socket.h>
 
+#include <machine/stdarg.h>
+
 /* debug */
 #define DEBUG 1
 #define DEBUG_TASK (1 << 1)
 #define DEBUG_VMFP (1 << 2)
 #define DEBUG_PROC (1 << 3)
 #define DEBUG_SOCK (1 << 4)
-static unsigned int debug_level = DEBUG_SOCK;
+static unsigned int debug_level = 0;
 
 /* sysctl */
 static struct sysctl_ctx_list clist;
 static struct sysctl_oid *poid;
 
-static unsigned int period = 3;
+static unsigned int scan_period = 3;
+static unsigned int warn_period = 10;
+static unsigned int warn_period_cnt = 0;
 
 /* vm free percentage */
 static unsigned int vmfp_enable = 1;
@@ -49,6 +53,33 @@ static int sock_low = 10;
 static int sock_gap = 10;
 static char sock_str[5] = "0%";
 
+static void
+rmonitor_warn_period(const char *fmt, ...) {
+    va_list ap;
+    int w = 0;
+
+    if (!warn_period_cnt || !warn_period)
+        w = 1;
+    if (warn_period)
+        warn_period_cnt += scan_period;
+    if (w || warn_period_cnt >= warn_period) {
+        va_start(ap, fmt);
+        vprintf(fmt, ap);
+        va_end(ap);
+        if (warn_period)
+            warn_period_cnt %= warn_period;
+    }
+}        
+
+static void
+rmonitor_warn_once(const char *fmt, ...) {
+    va_list ap;
+
+    va_start(ap, fmt);
+    vprintf(fmt, ap);
+    va_end(ap);
+}
+
 /* callout */
 static struct callout rmon_callout;
 
@@ -57,7 +88,7 @@ rmonitor_task_detect(void *arg) {
     int pre, gap;
 
     if (debug_level &  DEBUG_TASK)
-        printf("Rmonitor execute, period: %d secs\n", period);
+        printf("Rmonitor execute, period: scan %d secs, warn %d secs\n", scan_period, warn_period);
 
     if (vmfp_enable && cnt.v_page_count) {
         pre = vmfp;
@@ -65,9 +96,9 @@ rmonitor_task_detect(void *arg) {
         gap = pre - vmfp;
         snprintf(vmfp_str, sizeof(vmfp_str), "%d%%", vmfp);
         if (vmfp < vmfp_low)
-            printf("Rmonitor: free memory %d%% is lower than threshold %d%%\n", vmfp, vmfp_low);
+            rmonitor_warn_period("Rmonitor: free memory %d%% is lower than threshold %d%%\n", vmfp, vmfp_low);
         if (gap > vmfp_gap)
-            printf("Rmonitor: free memory decrease %d%%(%d%%->%d%%) is greater than threshold %d%%\n", 
+            rmonitor_warn_once("Rmonitor: free memory decrease %d%%(%d%%->%d%%) is greater than threshold %d%%\n",
                     gap, pre, vmfp, vmfp_gap);
             
         if (debug_level & DEBUG_VMFP)
@@ -80,9 +111,9 @@ rmonitor_task_detect(void *arg) {
         gap = pre - proc;
         snprintf(proc_str, sizeof(proc_str), "%d%%", proc);
         if (proc < proc_low)
-            printf("Rmonitor: free process %d%% is lower than threshold %d%%\n", proc, proc_low);
+            rmonitor_warn_period("Rmonitor: free process %d%% is lower than threshold %d%%\n", proc, proc_low);
         if (gap > proc_gap)
-            printf("Rmonitor: free process decrease %d%%(%d%%->%d%%) is greater than threshold %d%%\n",
+            rmonitor_warn_once("Rmonitor: free process decrease %d%%(%d%%->%d%%) is greater than threshold %d%%\n",
                     gap, pre, proc, proc_gap);
 
         if (debug_level & DEBUG_PROC)
@@ -95,34 +126,34 @@ rmonitor_task_detect(void *arg) {
         gap = pre - sock;
         snprintf(sock_str, sizeof(sock_str), "%d%%", sock);
         if (sock < sock_low)
-            printf("Rmonitor: free socket %d%% is lower than threshold %d%%\n", sock, sock_low);
+            rmonitor_warn_period("Rmonitor: free socket %d%% is lower than threshold %d%%\n", sock, sock_low);
         if (gap > sock_gap)
-            printf("Rmonitor: free socket decrease %d%%(%d%%->%d%%) is greater than threshold %d%%\n",
+            rmonitor_warn_once("Rmonitor: free socket decrease %d%%(%d%%->%d%%) is greater than threshold %d%%\n",
                     gap, pre, sock, sock_gap);
 
         if (debug_level & DEBUG_SOCK)
             printf("free sock %d total %d percent %d%%\n", (maxsockets - numopensockets), maxsockets, sock);
     }
 
-    if (period)
-        callout_reset(&rmon_callout, period*hz, rmonitor_task_detect, NULL);
+    if (scan_period)
+        callout_reset(&rmon_callout, scan_period*hz, rmonitor_task_detect, NULL);
 }
 
 static int
-sysctl_period_procedure(SYSCTL_HANDLER_ARGS) {
+sysctl_scan_period_procedure(SYSCTL_HANDLER_ARGS) {
     int error = 0;
-    unsigned int p = period;
+    unsigned int p = scan_period;
 
-    error = sysctl_handle_int(oidp, &period, 0, req);
+    error = sysctl_handle_int(oidp, &scan_period, 0, req);
     if (error) {
         uprintf("Rmonitor: sysctl_handle_int failed\n");
         goto period_ret;
     }
 
-    if (period != p) {
-        uprintf("Rmonitor set, period: %d secs\n", period);
-        if (period)
-            callout_reset(&rmon_callout, period*hz, rmonitor_task_detect, NULL);
+    if (scan_period != p) {
+        uprintf("Rmonitor set scan period: %d secs\n", scan_period);
+        if (scan_period)
+            callout_reset(&rmon_callout, scan_period*hz, rmonitor_task_detect, NULL);
         else
             callout_drain(&rmon_callout);
     }
@@ -149,9 +180,12 @@ rmonitor_modevent(module_t mod __unused, int event, void *arg __unused)
         }
 
         SYSCTL_ADD_PROC(&clist, SYSCTL_CHILDREN(poid), OID_AUTO,
-            "period", CTLTYPE_UINT | CTLFLAG_WR, 0, 0, sysctl_period_procedure,
-            "I", "monitor period (secs), 0: disable");
-            
+            "scan_period", CTLTYPE_UINT | CTLFLAG_WR, 0, 0, sysctl_scan_period_procedure,
+            "I", "scan period (secs), 0: disable");
+
+        SYSCTL_ADD_INT(&clist, SYSCTL_CHILDREN(poid), OID_AUTO,
+            "warn_period", CTLFLAG_RW, &warn_period, 0, "warn period (secs), 0: same as scan period" );
+
         SYSCTL_ADD_UINT(&clist, SYSCTL_CHILDREN(poid), OID_AUTO,
             "debug_level", CTLFLAG_RW, &debug_level, 0,  "rmonitor debug level");
             
